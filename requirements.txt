@@ -15,5 +15,5 @@ httpx==0.28.1
 pydantic==2.10.4
 pydantic-settings==2.7.1
 
-# markitdown (lokale editable install)
--e ../packages/markitdown[all]
+# markitdown (from PyPI)
+markitdown[all]==0.1.6

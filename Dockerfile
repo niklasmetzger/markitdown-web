@@ -19,21 +19,16 @@ WORKDIR /app
 
 # Layer caching: deps first, code second
 COPY requirements.txt ./
-COPY packages/ ./packages/
-
-# Install webapp deps + markitdown (editable, from local source)
 RUN pip install -r requirements.txt
 
-# Copy the webapp code
-COPY webapp/ ./webapp/
+# Copy the webapp code (the repo's build-context root is the webapp/ contents)
+COPY app/ ./app/
 
 # Non-root user
 RUN useradd --create-home --uid 1000 app && chown -R app:app /app
 USER app
 
 EXPOSE 8000
-
-WORKDIR /app/webapp
 
 # Healthcheck (uses the /health endpoint)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
