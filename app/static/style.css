@@ -1,0 +1,17 @@
+/* Kleine Anpassungen, die Tailwind-CDN nicht abdeckt */
+html, body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+
+pre {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  line-height: 1.5;
+}
+
+#dropzone.drag-over {
+  border-color: rgb(99, 102, 241);
+  background-color: rgb(238, 242, 255);
+}
+
+/* Markdown-Preview verbessern, falls wir es später einbauen */
+.markdown-body h1, .markdown-body h2, .markdown-body h3 { font-weight: 600; }
+.markdown-body code { background: rgb(241, 245, 249); padding: 0.1em 0.3em; border-radius: 3px; font-size: 0.9em; }
+.markdown-body pre { background: rgb(15, 23, 42); color: rgb(226, 232, 240); padding: 1em; border-radius: 6px; }
