@@ -6,6 +6,10 @@ services:
     image: markitdown-web:latest
     container_name: markitdown-web
     restart: unless-stopped
+    # Run as root inside the container so the host-mounted ./data volume is
+    # always writable. See Dockerfile note. Override here if you mount
+    # data/ with explicit non-root ownership.
+    user: "0:0"
     ports:
       - "${WEB_PORT:-8000}:8000"
     environment:
