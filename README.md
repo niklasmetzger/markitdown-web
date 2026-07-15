@@ -57,15 +57,33 @@ Daten (User-JSON, Sessions) liegen in `./data/` und werden als Volume gemountet.
 
 ## API
 
-| Methode | Pfad                  | Auth   | Body                              | Response |
-| ------- | --------------------- | ------ | --------------------------------- | -------- |
-| `POST`  | `/login`              | –      | `username`, `password` (form)     | 302 + Cookie |
-| `GET`   | `/auth/oidc/login`    | –      | –                                 | 302 zu OIDC |
-| `POST`  | `/api/convert`        | Bearer/Cookie | `files[]` (multipart)     | JSON: pro Datei `markdown` oder `error` |
-| `POST`  | `/api/convert-zip`    | Bearer/Cookie | `files[]` (multipart)     | `.zip` mit allen `.md`s |
-| `GET`   | `/health`             | –      | –                                 | `{"status":"ok"}` |
+| Methode | Pfad                                | Auth   | Body                              | Response |
+| ------- | ----------------------------------- | ------ | --------------------------------- | -------- |
+| `POST`  | `/login`                            | –      | `username`, `password` (form)     | 302 + Cookie |
+| `GET`   | `/auth/oidc/login`                  | –      | –                                 | 302 zu OIDC |
+| `POST`  | `/api/jobs`                         | Bearer/Cookie | `files[]` (multipart)     | JSON: `{job_id, files[], expires_at}` |
+| `GET`   | `/api/jobs`                         | Bearer/Cookie | –                        | JSON: `{jobs: [...]}` — User-eigene aktive Jobs |
+| `GET`   | `/api/jobs/{id}`                    | Bearer/Cookie | –                        | JSON: Job-Status (oder 404) |
+| `GET`   | `/api/jobs/{id}/download?format=md\|zip\|auto` | Bearer/Cookie | –         | Datei-Stream (Multi-Use) |
+| `DELETE`| `/api/jobs/{id}`                    | Bearer/Cookie | –                        | `{purged: true}` |
+| `DELETE`| `/api/jobs`                         | Bearer/Cookie | –                        | `{purged: N}` — alle eigenen Jobs löschen |
+| `GET`   | `/health`                           | –      | –                                 | `{"status":"ok","jobs":{...}}` |
 
 API-Auth: `Authorization: Bearer <jwt>` oder Cookie `md_session`.
+
+### Job-Lifecycle (Multi-Use mit Sliding TTL)
+
+1. **Upload** → Server konvertiert in-memory, legt Job an, gibt `job_id` zurück.
+2. **Downloads** sind **multi-use** — gleiche `job_id` kann beliebig oft abgerufen werden.
+3. **TTL ist sliding**: bei jedem Download/View wird die Ablaufzeit um `DATA_RETENTION_SECONDS` nach vorn geschoben (Default: 600s = 10 min).
+4. **Manuelles Löschen**: `DELETE /api/jobs/{id}` (einzeln) oder `DELETE /api/jobs` (alle eigenen).
+5. **Ablauf**: Background-Reaper (alle `REAPER_INTERVAL_SECONDS`) löscht nicht-zugegriffene Jobs.
+
+**Garantien:**
+- **Keine Disk-Persistenz** — Jobs existieren nur im Prozess-RAM.
+- **Per-User-Isolation** — `GET /api/jobs` listet nur eigene Jobs; fremde Job-IDs liefern 404.
+- **Server-Restart** → alle Jobs weg (kein Persistenz-Layer).
+- **Audit-Log** — jeder Lifecycle-Schritt: `job XYZ created/purged reason=...`.
 
 ## Konfiguration (.env)
 
@@ -79,6 +97,9 @@ API-Auth: `Authorization: Bearer <jwt>` oder Cookie `md_session`.
 | `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | – | OIDC-Credentials |
 | `OIDC_AUTO_CREATE_USERS` | `true` | User aus OIDC automatisch anlegen |
 | `MAX_UPLOAD_SIZE` | `104857600` | Max. Bytes pro Datei (default 100 MB) |
+| `DATA_RETENTION_SECONDS` | `600` | Idle-Zeit, nach der ein Job vom Reaper gelöscht wird (Sliding: jeder Zugriff setzt zurück) |
+| `SLIDING_TTL` | `true` | Wenn `true`: TTL wird bei jedem Download/View erneuert. Wenn `false`: harte Ablaufzeit ab Erstellung. |
+| `REAPER_INTERVAL_SECONDS` | `60` | Wie oft der Reaper-Job nach abgelaufenen Jobs schaut |
 
 ## Projektstruktur
 

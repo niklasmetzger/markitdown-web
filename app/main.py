@@ -1,18 +1,19 @@
-"""FastAPI app: login, file upload → markdown."""
+"""FastAPI app: login, upload → job → multi-use download with sliding TTL."""
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
+import time
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
-    PlainTextResponse,
     RedirectResponse,
     Response,
     StreamingResponse,
@@ -29,15 +30,48 @@ from .auth import (
 )
 from .config import Settings, get_settings
 from .converter import convert_upload
+from .jobs import JobStore
 from .users import UserStore
 
 logger = logging.getLogger("markitdown-web")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: launch background reaper. Shutdown: cancel it cleanly."""
+    settings = get_settings()
+    app.state.job_store = JobStore(ttl_seconds=settings.data_retention_seconds)
+    app.state.reaper_stop = asyncio.Event()
+
+    async def reaper_loop() -> None:
+        interval = settings.reaper_interval_seconds
+        logger.info("reaper started: scan every %ds, ttl=%ds", interval, settings.data_retention_seconds)
+        while not app.state.reaper_stop.is_set():
+            try:
+                purged = app.state.job_store.reap_expired()
+                if purged:
+                    logger.info("reaper: purged %d expired job(s)", purged)
+            except Exception:
+                logger.exception("reaper iteration failed")
+            try:
+                await asyncio.wait_for(app.state.reaper_stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+        logger.info("reaper stopped")
+
+    app.state.reaper_task = asyncio.create_task(reaper_loop())
+    yield
+    app.state.reaper_stop.set()
+    try:
+        await asyncio.wait_for(app.state.reaper_task, timeout=5)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        app.state.reaper_task.cancel()
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title=settings.app_name, debug=settings.debug)
+    app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 
     base = Path(__file__).parent
     app.mount("/static", StaticFiles(directory=base / "static"), name="static")
@@ -57,12 +91,11 @@ def create_app() -> FastAPI:
             except ValueError:
                 pass
 
-    # --- Context for templates -------------------------------------------------
-    @app.middleware("http")
-    async def add_user_context(request: Request, call_next):
-        request.state.user = None
-        response = await call_next(request)
-        return response
+    def job_store(request: Request) -> JobStore:
+        return request.app.state.job_store
+
+    def owner_of(user: dict) -> str:
+        return user.get("username", "")
 
     # --- Pages ----------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
@@ -149,7 +182,6 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"OIDC error: {e}")
         claims = token.get("userinfo") or {}
         if not claims:
-            # Some providers put id_token claims at the top level
             try:
                 claims = await oauth.oidc.parse_id_token(request, token)
             except Exception:
@@ -203,72 +235,126 @@ def create_app() -> FastAPI:
                 "request": request,
                 "user": user,
                 "max_upload_size": settings.max_upload_size,
+                "retention_seconds": settings.data_retention_seconds,
                 "app_name": settings.app_name,
             },
         )
 
-    @app.post("/api/convert")
-    async def api_convert(
+    # --- Job API --------------------------------------------------------------
+    @app.post("/api/jobs")
+    async def create_job(
         files: list[UploadFile] = File(...),
         user=Depends(get_current_user),
         settings: Settings = Depends(get_settings),
+        jobs: JobStore = Depends(job_store),
     ):
+        """Convert uploaded files into a server-side job. Returns job_id + summary.
+
+        Jobs are multi-use: downloads do NOT purge them. They remain available
+        until manually deleted or until the idle TTL expires (sliding by default).
+        """
         if not files:
             raise HTTPException(status_code=400, detail="no files uploaded")
-        results = []
+
+        successful: list[dict] = []
+        errors: list[dict] = []
         for f in files:
             content = await f.read()
             if len(content) > settings.max_upload_size:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"{f.filename!r} exceeds max size {settings.max_upload_size} bytes",
-                )
+                errors.append({"filename": f.filename, "ok": False, "error": "exceeds max size"})
+                continue
             try:
                 md = convert_upload(f.filename or "upload.bin", content)
             except Exception as e:
                 logger.exception("convert failed for %s", f.filename)
-                results.append({"filename": f.filename, "ok": False, "error": str(e)})
+                errors.append({"filename": f.filename, "ok": False, "error": str(e)})
                 continue
-            results.append({
-                "filename": f.filename,
-                "ok": True,
+            successful.append({
+                "filename": f.filename or "upload.bin",
                 "markdown": md,
-                "size": len(md),
             })
-        # Single file → flat response; multiple → keep array
-        if len(results) == 1:
-            r = results[0]
-            if not r["ok"]:
-                return JSONResponse(r, status_code=400)
-            return JSONResponse(r)
-        return JSONResponse({"results": results})
 
-    @app.post("/api/convert-zip")
-    async def api_convert_zip(
-        files: list[UploadFile] = File(...),
+        if not successful:
+            return JSONResponse({"results": errors}, status_code=400)
+
+        job = jobs.create(successful, owner=owner_of(user))
+        return {
+            "job_id": job.id,
+            "created_at": job.created_at,
+            "expires_at": job.expires_at,
+            "ttl_seconds": int(job.expires_at - job.created_at),
+            "files": [
+                {"filename": f["filename"], "size": len(f["markdown"] or "")}
+                for f in job.files
+            ],
+            "errors": errors,
+        }
+
+    @app.get("/api/jobs")
+    async def list_jobs(
         user=Depends(get_current_user),
-        settings: Settings = Depends(get_settings),
+        jobs: JobStore = Depends(job_store),
     ):
-        """Convert all uploaded files and return a single .zip of .md files."""
-        if not files:
-            raise HTTPException(status_code=400, detail="no files uploaded")
+        """List the current user's active jobs, newest first."""
+        return {"jobs": jobs.list_by_owner(owner_of(user))}
+
+    @app.get("/api/jobs/{job_id}")
+    async def get_job(
+        job_id: str,
+        user=Depends(get_current_user),
+        jobs: JobStore = Depends(job_store),
+    ):
+        job = jobs.get(job_id)  # touches if sliding
+        if not job:
+            raise HTTPException(status_code=404, detail="job not found or expired")
+        # Per-user isolation: don't reveal other users' jobs
+        if job.owner != owner_of(user):
+            raise HTTPException(status_code=404, detail="job not found")
+        return {
+            "job_id": job.id,
+            "created_at": job.created_at,
+            "expires_at": job.expires_at,
+            "ttl_remaining": int(job.expires_at - time.time()),
+            "files": [
+                {"filename": f["filename"], "size": len(f["markdown"] or "")}
+                for f in job.files
+            ],
+        }
+
+    @app.get("/api/jobs/{job_id}/download")
+    async def download_job(
+        job_id: str,
+        format: str = "auto",
+        user=Depends(get_current_user),
+        jobs: JobStore = Depends(job_store),
+    ):
+        """Multi-use download. Sliding TTL is refreshed on each call.
+
+        Auto: 1 file → .md, multiple → .zip.
+        """
+        job = jobs.get(job_id, touch=True)
+        if not job:
+            raise HTTPException(status_code=404, detail="job not found or expired")
+        if job.owner != owner_of(user):
+            raise HTTPException(status_code=404, detail="job not found")
+
+        if format == "auto":
+            format = "md" if len(job.files) == 1 else "zip"
+
+        if format == "md" and len(job.files) == 1:
+            f = job.files[0]
+            md_name = (Path(f["filename"]).stem or "output") + ".md"
+            return Response(
+                content=f["markdown"] or "",
+                media_type="text/markdown; charset=utf-8",
+                headers={"Content-Disposition": f'attachment; filename="{md_name}"'},
+            )
+
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            errors = []
-            for f in files:
-                content = await f.read()
-                if len(content) > settings.max_upload_size:
-                    errors.append(f"{f.filename}: too large")
-                    continue
-                try:
-                    md = convert_upload(f.filename or "upload.bin", content)
-                except Exception as e:
-                    errors.append(f"{f.filename}: {e}")
-                    continue
-                md_name = (Path(f.filename or "upload").stem or "upload") + ".md"
-                zf.writestr(md_name, md.encode("utf-8"))
-            if errors:
-                zf.writestr("_errors.txt", "\n".join(errors).encode("utf-8"))
+            for f in job.files:
+                md_name = (Path(f["filename"]).stem or "output") + ".md"
+                zf.writestr(md_name, (f["markdown"] or "").encode("utf-8"))
         buf.seek(0)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         return StreamingResponse(
@@ -277,9 +363,35 @@ def create_app() -> FastAPI:
             headers={"Content-Disposition": f'attachment; filename="markitdown-{stamp}.zip"'},
         )
 
+    @app.delete("/api/jobs/{job_id}")
+    async def delete_job(
+        job_id: str,
+        user=Depends(get_current_user),
+        jobs: JobStore = Depends(job_store),
+    ):
+        # Verify ownership before purging
+        existing = jobs.get(job_id, touch=False)
+        if not existing or existing.owner != owner_of(user):
+            raise HTTPException(status_code=404, detail="job not found")
+        purged = jobs.purge(job_id, reason="manual")
+        return {"purged": True, "job_id": job_id}
+
+    @app.delete("/api/jobs")
+    async def delete_all_jobs(
+        user=Depends(get_current_user),
+        jobs: JobStore = Depends(job_store),
+    ):
+        """Purge all jobs owned by the current user."""
+        count = jobs.purge_by_owner(owner_of(user), reason="manual_all")
+        return {"purged": count}
+
     @app.get("/health")
-    async def health():
-        return {"status": "ok", "app": get_settings().app_name}
+    async def health(request: Request):
+        return {
+            "status": "ok",
+            "app": get_settings().app_name,
+            "jobs": request.app.state.job_store.stats(),
+        }
 
     return app
 

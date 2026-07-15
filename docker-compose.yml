@@ -15,6 +15,9 @@ services:
       SECRET_KEY: "${SECRET_KEY:-changeme-please-generate-a-real-one}"
       DEBUG: "${DEBUG:-false}"
       MAX_UPLOAD_SIZE: "${MAX_UPLOAD_SIZE:-104857600}"  # 100 MB
+      DATA_RETENTION_SECONDS: "${DATA_RETENTION_SECONDS:-600}"   # 10 min sliding
+      SLIDING_TTL: "${SLIDING_TTL:-true}"
+      REAPER_INTERVAL_SECONDS: "${REAPER_INTERVAL_SECONDS:-60}"
 
       # --- Bootstrap admin (only used on first run) ---
       BOOTSTRAP_USER: "${BOOTSTRAP_USER:-admin}"

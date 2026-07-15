@@ -9,6 +9,10 @@
       PowerPoint, Word, Excel, PDF, Bilder, Audio, HTML und mehr → Markdown.
       Max. {{ (max_upload_size / 1024 / 1024) | round(1) }} MB pro Datei.
     </p>
+    <p class="text-xs text-slate-600 bg-slate-100 border border-slate-200 rounded px-3 py-2 mt-3 inline-block">
+      🔒 Konvertierungen bleiben {{ retention_seconds // 60 }} Min nach dem letzten Zugriff im Cache
+      (sliding TTL). Du kannst sie beliebig oft herunterladen oder manuell löschen.
+    </p>
   </div>
 
   <div id="dropzone"
@@ -19,14 +23,12 @@
     <p class="text-xs text-slate-500 mt-1">.pptx, .potx, .pdf, .docx, .xlsx, .png, .jpg, .mp3, …</p>
   </div>
 
+  <div id="file-list" class="space-y-2"></div>
+
   <div class="flex items-center gap-3 text-sm">
     <button id="convert-btn" disabled
             class="px-4 py-2 bg-indigo-600 text-white rounded font-medium disabled:bg-slate-300 disabled:cursor-not-allowed hover:bg-indigo-700 transition">
       Umwandeln
-    </button>
-    <button id="zip-btn" disabled
-            class="px-4 py-2 bg-white border border-slate-300 text-slate-700 rounded font-medium disabled:bg-slate-50 disabled:text-slate-400 disabled:cursor-not-allowed hover:bg-slate-50 transition">
-      Als .zip herunterladen
     </button>
     <button id="clear-btn" disabled
             class="px-4 py-2 text-slate-500 hover:text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed">
@@ -35,9 +37,24 @@
     <span id="status" class="ml-auto text-slate-500"></span>
   </div>
 
-  <div id="file-list" class="space-y-2"></div>
+  <div id="errors" class="space-y-2"></div>
 
-  <div id="results" class="space-y-4"></div>
+  <div class="border-t border-slate-200 pt-6">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+        Letzte Konvertierungen
+        <span id="history-count" class="ml-2 text-xs font-normal text-slate-400"></span>
+      </h2>
+      <button id="clear-all-btn" class="text-xs text-slate-500 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed" disabled>
+        Alle löschen
+      </button>
+    </div>
+    <div id="history" class="space-y-2">
+      <div id="history-empty" class="text-sm text-slate-400 italic">
+        Noch keine Konvertierungen.
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -46,23 +63,57 @@
   const fileInput = document.getElementById('file-input');
   const fileListEl = document.getElementById('file-list');
   const convertBtn = document.getElementById('convert-btn');
-  const zipBtn = document.getElementById('zip-btn');
   const clearBtn = document.getElementById('clear-btn');
-  const resultsEl = document.getElementById('results');
   const statusEl = document.getElementById('status');
+  const errorsEl = document.getElementById('errors');
+  const historyEl = document.getElementById('history');
+  const historyEmptyEl = document.getElementById('history-empty');
+  const historyCountEl = document.getElementById('history-count');
+  const clearAllBtn = document.getElementById('clear-all-btn');
 
   let files = [];
+  let historyRefreshTimer = null;
 
+  // --- helpers --------------------------------------------------------------
+  function formatBytes(n) {
+    if (!n) return '0 B';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(2) + ' MB';
+  }
+
+  function formatAge(seconds) {
+    if (seconds < 60) return 'gerade eben';
+    if (seconds < 3600) return 'vor ' + Math.floor(seconds / 60) + ' Min';
+    if (seconds < 86400) return 'vor ' + Math.floor(seconds / 3600) + ' Std';
+    return 'vor ' + Math.floor(seconds / 86400) + ' Tg';
+  }
+
+  function formatTime(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function formatTtl(seconds) {
+    if (seconds < 60) return Math.max(0, Math.floor(seconds)) + 's';
+    return Math.floor(seconds / 60) + ' Min';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // --- file list (pre-convert) ---------------------------------------------
   function renderFiles() {
     fileListEl.innerHTML = '';
     files.forEach((f, i) => {
       const row = document.createElement('div');
       row.className = 'flex items-center gap-3 bg-white border border-slate-200 rounded px-3 py-2 text-sm';
-      const sizeKb = (f.file.size / 1024).toFixed(1);
       row.innerHTML = `
         <span class="text-slate-500">📎</span>
-        <span class="flex-1 truncate">${f.file.name}</span>
-        <span class="text-slate-400 text-xs">${sizeKb} KB</span>
+        <span class="flex-1 truncate">${escapeHtml(f.name)}</span>
+        <span class="text-slate-400 text-xs">${formatBytes(f.size)}</span>
         <button data-i="${i}" class="text-slate-400 hover:text-red-600 remove-btn">✕</button>
       `;
       fileListEl.appendChild(row);
@@ -80,17 +131,19 @@
   function updateButtons() {
     const has = files.length > 0;
     convertBtn.disabled = !has;
-    zipBtn.disabled = !has;
     clearBtn.disabled = !has;
-    statusEl.textContent = has ? `${files.length} Datei${files.length === 1 ? '' : 'en'} ausgewählt` : '';
+    if (!has) statusEl.textContent = '';
   }
 
   function addFiles(picked) {
     for (const f of picked) {
-      if (!files.some(x => x.file.name === f.name && x.file.size === f.size)) {
-        files.push({ file: f, status: 'pending' });
-      }
+      if (!files.some(x => x.name === f.name && x.size === f.size)) files.push(f);
     }
+    renderFiles();
+  }
+
+  function clearFiles() {
+    files = [];
     renderFiles();
   }
 
@@ -103,115 +156,221 @@
     addFiles(e.dataTransfer.files);
   });
   fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
-  clearBtn.addEventListener('click', () => { files = []; resultsEl.innerHTML = ''; renderFiles(); });
+  clearBtn.addEventListener('click', clearFiles);
 
-  function showError(msg) {
-    statusEl.innerHTML = `<span class="text-red-600">${msg}</span>`;
+  // --- errors display --------------------------------------------------------
+  function showErrors(errors) {
+    errorsEl.innerHTML = '';
+    if (!errors || !errors.length) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'space-y-1';
+    errors.forEach(e => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-3 px-4 py-2 bg-red-50 border border-red-200 rounded text-sm text-red-700';
+      row.innerHTML = `<span>✗</span><span class="font-medium">${escapeHtml(e.filename || '?')}</span><span class="text-xs">— ${escapeHtml(e.error)}</span>`;
+      wrap.appendChild(row);
+    });
+    errorsEl.appendChild(wrap);
   }
 
-  async function upload(endpoint, asZip) {
-    if (!files.length) return;
-    convertBtn.disabled = true;
-    zipBtn.disabled = true;
-    statusEl.textContent = 'Konvertiere…';
-    resultsEl.innerHTML = '';
+  // --- history ---------------------------------------------------------------
+  function renderHistory(jobs) {
+    historyEl.innerHTML = '';
+    if (!jobs.length) {
+      historyEl.appendChild(historyEmptyEl);
+      historyCountEl.textContent = '';
+      clearAllBtn.disabled = true;
+      return;
+    }
+    historyCountEl.textContent = `(${jobs.length})`;
+    clearAllBtn.disabled = false;
 
-    const fd = new FormData();
-    files.forEach(f => fd.append('files', f.file, f.file.name));
+    jobs.forEach(j => {
+      const card = document.createElement('div');
+      card.className = 'bg-white border border-slate-200 rounded-lg p-3';
+      card.dataset.jobId = j.job_id;
 
+      const fileList = j.files.map(f => `
+        <li class="flex items-center gap-2 py-0.5 text-sm">
+          <span class="text-slate-400">📄</span>
+          <span class="flex-1 truncate">${escapeHtml(f.filename)}</span>
+          <span class="text-xs text-slate-400">${formatBytes(f.size)}</span>
+        </li>
+      `).join('');
+
+      const totalSize = j.files.reduce((a, f) => a + (f.size || 0), 0);
+      const isMulti = j.files.length > 1;
+      const ageSec = Math.floor(Date.now() / 1000) - j.created_at;
+
+      card.innerHTML = `
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-xs font-medium text-slate-700">${j.files.length} Datei${isMulti ? 'en' : ''}</span>
+          <span class="text-xs text-slate-400">·</span>
+          <span class="text-xs text-slate-500" data-age="${ageSec}">${formatAge(ageSec)}</span>
+          <span class="text-xs text-slate-400">·</span>
+          <span class="text-xs text-slate-500" data-ttl="${j.ttl_remaining}">noch ${formatTtl(j.ttl_remaining)}</span>
+          <span class="ml-auto text-xs text-slate-400">${formatBytes(totalSize)}</span>
+        </div>
+        <ul class="space-y-0.5 mb-2">${fileList}</ul>
+        <div class="flex items-center gap-2 pt-2 border-t border-slate-100">
+          <button data-act="dl" data-format="auto"
+                  class="px-2 py-1 bg-indigo-600 text-white text-xs rounded font-medium hover:bg-indigo-700">
+            ⬇ Download${isMulti ? ' (.zip)' : ''}
+          </button>
+          ${isMulti ? '' : `<button data-act="dl" data-format="md"
+                  class="px-2 py-1 bg-white border border-slate-300 text-slate-700 text-xs rounded hover:bg-slate-50">
+            als .md
+          </button>`}
+          <button data-act="delete"
+                  class="ml-auto px-2 py-1 text-slate-400 hover:text-red-600 text-xs">
+            Löschen
+          </button>
+        </div>
+      `;
+      card.querySelectorAll('[data-act]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const act = btn.dataset.act;
+          if (act === 'dl') downloadJob(j.job_id, btn.dataset.format);
+          else if (act === 'delete') deleteJob(j.job_id);
+        });
+      });
+      historyEl.appendChild(card);
+    });
+  }
+
+  async function refreshHistory() {
     try {
-      const res = await fetch(endpoint, { method: 'POST', body: fd });
-      if (asZip) {
-        if (!res.ok) {
-          const j = await res.json().catch(() => ({}));
-          showError(j.detail || `Fehler ${res.status}`);
+      const res = await fetch('/api/jobs', { credentials: 'same-origin' });
+      if (!res.ok) return;
+      const data = await res.json();
+      renderHistory(data.jobs || []);
+    } catch (e) {
+      // network glitch — ignore, will retry
+    }
+  }
+
+  // Refresh ages in-place every 30s without re-fetching
+  function refreshAges() {
+    const now = Math.floor(Date.now() / 1000);
+    historyEl.querySelectorAll('[data-age]').forEach(el => {
+      const created = parseInt(el.dataset.createdAt || '0', 10);
+      // We don't have createdAt on the element; recompute by re-rendering with new TTL
+    });
+    // Re-fetch is cheap enough at 30s cadence
+    refreshHistory();
+  }
+
+  // --- download / delete -----------------------------------------------------
+  function showError(msg) {
+    statusEl.innerHTML = `<span class="text-red-600">${escapeHtml(msg)}</span>`;
+    setTimeout(() => { if (statusEl.innerHTML.includes(msg)) statusEl.textContent = ''; }, 4000);
+  }
+
+  function showInfo(msg) {
+    statusEl.textContent = msg;
+    setTimeout(() => { if (statusEl.textContent === msg) statusEl.textContent = ''; }, 4000);
+  }
+
+  async function downloadJob(jobId, format) {
+    showInfo('Bereite Download vor…');
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/download?format=${format}`, { credentials: 'same-origin' });
+      if (!res.ok) {
+        if (res.status === 404) {
+          showError('Job nicht mehr verfügbar (abgelaufen oder gelöscht)');
+          refreshHistory();
           return;
         }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `markitdown-${Date.now()}.zip`;
-        a.click();
-        URL.revokeObjectURL(url);
-        statusEl.textContent = 'Fertig — Download gestartet ✓';
+        const j = await res.json().catch(() => ({}));
+        showError(j.detail || `Server-Fehler ${res.status}`);
         return;
       }
-      const data = await res.json();
-      if (!res.ok) {
-        showError(data.detail || data.error || `Fehler ${res.status}`);
-        return;
-      }
-      const results = data.results || [data];
-      results.forEach(r => renderResult(r));
-      statusEl.textContent = 'Fertig ✓';
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const m = /filename="?([^"]+)"?/.exec(disposition);
+      const filename = m ? m[1] : 'download';
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showInfo(`✓ Heruntergeladen: ${filename}`);
+      // Refresh: TTL was just extended
+      refreshHistory();
     } catch (e) {
       showError(e.message || 'Netzwerkfehler');
+    }
+  }
+
+  async function deleteJob(jobId) {
+    if (!confirm('Diese Konvertierung wirklich löschen?')) return;
+    try {
+      const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE', credentials: 'same-origin' });
+      if (res.ok) {
+        showInfo('Job gelöscht');
+        refreshHistory();
+      } else {
+        showError(`Löschen fehlgeschlagen (${res.status})`);
+      }
+    } catch (e) {
+      showError(e.message);
+    }
+  }
+
+  async function clearAll() {
+    if (!confirm('Wirklich alle deine Konvertierungen löschen?')) return;
+    try {
+      const res = await fetch('/api/jobs', { method: 'DELETE', credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      showInfo(`${data.purged || 0} Job(s) gelöscht`);
+      refreshHistory();
+    } catch (e) {
+      showError(e.message);
+    }
+  }
+
+  clearAllBtn.addEventListener('click', clearAll);
+
+  // --- convert ---------------------------------------------------------------
+  async function convert() {
+    if (!files.length) return;
+    convertBtn.disabled = true;
+    showInfo('Konvertiere…');
+    errorsEl.innerHTML = '';
+
+    const fd = new FormData();
+    files.forEach(f => fd.append('files', f, f.name));
+
+    try {
+      const res = await fetch('/api/jobs', { method: 'POST', body: fd, credentials: 'same-origin' });
+      const data = await res.json();
+      if (!res.ok) {
+        showError(data.detail || 'Konvertierung fehlgeschlagen');
+        if (data.results) showErrors(data.results);
+        return;
+      }
+      showErrors(data.errors);
+      showInfo(`✓ ${data.files.length} Datei(en) konvertiert`);
+      clearFiles();
+      refreshHistory();
+    } catch (e) {
+      showError(e.message);
     } finally {
       updateButtons();
     }
   }
 
-  function renderResult(r) {
-    const wrap = document.createElement('div');
-    wrap.className = 'bg-white border border-slate-200 rounded-lg overflow-hidden';
-    if (r.ok) {
-      wrap.innerHTML = `
-        <div class="flex items-center justify-between px-4 py-2 bg-slate-50 border-b border-slate-200">
-          <div class="font-medium text-sm">${r.filename}</div>
-          <div class="flex items-center gap-3 text-xs text-slate-500">
-            <span>${r.size.toLocaleString('de-DE')} Zeichen</span>
-            <button data-fn="${r.filename}" class="download-btn text-indigo-600 hover:underline">.md herunterladen</button>
-            <button data-fn="${r.filename}" class="copy-btn text-slate-600 hover:underline">Kopieren</button>
-          </div>
-        </div>
-        <pre class="p-4 text-xs overflow-x-auto max-h-96 whitespace-pre-wrap">${escapeHtml(r.markdown).slice(0, 4000)}${r.markdown.length > 4000 ? '\n…(gekürzt)' : ''}</pre>
-      `;
-    } else {
-      wrap.innerHTML = `
-        <div class="flex items-center gap-3 px-4 py-2 bg-red-50 border-b border-red-200 text-sm text-red-700">
-          <span>✗</span><span class="font-medium">${r.filename}</span>
-          <span class="text-xs">— ${r.error}</span>
-        </div>`;
-    }
-    resultsEl.appendChild(wrap);
+  convertBtn.addEventListener('click', convert);
 
-    wrap.querySelectorAll('.download-btn').forEach(btn => {
-      btn.addEventListener('click', () => downloadMarkdown(btn.dataset.fn, results));
-    });
-    wrap.querySelectorAll('.copy-btn').forEach(btn => {
-      btn.addEventListener('click', () => copyMarkdown(btn.dataset.fn, results, btn));
-    });
-  }
-
-  function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  }
-
-  function downloadMarkdown(filename, results) {
-    const r = results.find(x => x.filename === filename);
-    if (!r || !r.ok) return;
-    const blob = new Blob([r.markdown], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename.replace(/\.[^.]+$/, '') + '.md';
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function copyMarkdown(filename, results, btn) {
-    const r = results.find(x => x.filename === filename);
-    if (!r || !r.ok) return;
-    navigator.clipboard.writeText(r.markdown).then(() => {
-      const orig = btn.textContent;
-      btn.textContent = '✓ Kopiert';
-      setTimeout(() => btn.textContent = orig, 1500);
-    });
-  }
-
-  convertBtn.addEventListener('click', () => upload('/api/convert', false));
-  zipBtn.addEventListener('click', () => upload('/api/convert-zip', true));
+  // --- init ------------------------------------------------------------------
+  refreshHistory();
+  historyRefreshTimer = setInterval(refreshHistory, 30000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshHistory();
+  });
 })();
 </script>
 {% endblock %}

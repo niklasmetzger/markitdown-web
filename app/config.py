@@ -28,7 +28,13 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     users_file: Path = Path("./data/users.json")
     max_upload_size: int = 100 * 1024 * 1024  # 100 MB
-    upload_keep_alive: bool = True  # store converted files temporarily
+
+    # Data retention — converted markdown is held in process memory only.
+    # Multi-use: downloads do NOT purge the job. Jobs expire on idle TTL
+    # (sliding by default) or via explicit DELETE.
+    data_retention_seconds: int = 600       # 10 min default
+    sliding_ttl: bool = True                # refresh TTL on every access
+    reaper_interval_seconds: int = 60       # how often to scan for expired jobs
 
     # Local auth
     local_auth_enabled: bool = True
