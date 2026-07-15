@@ -9,8 +9,9 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated, Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -107,8 +108,8 @@ def create_app() -> FastAPI:
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(
         request: Request,
-        error: Optional[str] = None,
-        next: Optional[str] = "/upload",
+        error: Annotated[Optional[str], Query()] = None,
+        next: Annotated[Optional[str], Query()] = "/upload",
         settings: Settings = Depends(get_settings),
         user=Depends(get_current_user_optional),
     ):
