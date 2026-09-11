@@ -123,6 +123,8 @@ def create_app() -> FastAPI:
                 "next": next or "/upload",
                 "local_auth_enabled": settings.local_auth_enabled,
                 "oidc_enabled": settings.oidc_configured,
+                "oidc_button_label": settings.oidc_button_label,
+                "app_name": settings.app_name,
             },
         )
 
@@ -147,6 +149,8 @@ def create_app() -> FastAPI:
                     "next": next,
                     "local_auth_enabled": settings.local_auth_enabled,
                     "oidc_enabled": settings.oidc_configured,
+                    "oidc_button_label": settings.oidc_button_label,
+                    "app_name": settings.app_name,
                 },
                 status_code=401,
             )

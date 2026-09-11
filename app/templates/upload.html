@@ -2,57 +2,48 @@
 {% block title %}Upload — {{ app_name }}{% endblock %}
 
 {% block content %}
-<div class="space-y-6">
-  <div>
-    <h1 class="text-2xl font-semibold text-slate-800">Dateien umwandeln</h1>
-    <p class="text-slate-600 mt-1">
+<div class="upload-page">
+  <div class="upload-head">
+    <h1 class="page-title">Dateien umwandeln</h1>
+    <p class="page-subtitle">
       PowerPoint, Word, Excel, PDF, Bilder, Audio, HTML und mehr → Markdown.
       Max. {{ (max_upload_size / 1024 / 1024) | round(1) }} MB pro Datei.
     </p>
-    <p class="text-xs text-slate-600 bg-slate-100 border border-slate-200 rounded px-3 py-2 mt-3 inline-block">
+    <p class="page-info-pill">
       🔒 Konvertierungen bleiben {{ retention_seconds // 60 }} Min nach dem letzten Zugriff im Cache
       (sliding TTL). Du kannst sie beliebig oft herunterladen oder manuell löschen.
     </p>
   </div>
 
-  <div id="dropzone"
-       class="bg-white border-2 border-dashed border-slate-300 rounded-lg p-10 text-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition">
-    <input id="file-input" type="file" multiple class="hidden">
-    <div class="text-4xl mb-3">⬆️</div>
-    <p class="text-slate-700 font-medium">Dateien hierher ziehen oder klicken</p>
-    <p class="text-xs text-slate-500 mt-1">.pptx, .potx, .pdf, .docx, .xlsx, .png, .jpg, .mp3, …</p>
+  <div id="dropzone" class="dropzone">
+    <input id="file-input" type="file" multiple class="sr-only">
+    <div class="dropzone-icon">⬆️</div>
+    <p class="dropzone-title">Dateien hierher ziehen oder klicken</p>
+    <p class="dropzone-sub">.pptx, .potx, .pdf, .docx, .xlsx, .png, .jpg, .mp3, …</p>
   </div>
 
-  <div id="file-list" class="space-y-2"></div>
+  <div id="file-list" class="file-list"></div>
 
-  <div class="flex items-center gap-3 text-sm">
-    <button id="convert-btn" disabled
-            class="px-4 py-2 bg-indigo-600 text-white rounded font-medium disabled:bg-slate-300 disabled:cursor-not-allowed hover:bg-indigo-700 transition">
-      Umwandeln
-    </button>
-    <button id="clear-btn" disabled
-            class="px-4 py-2 text-slate-500 hover:text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed">
-      Liste leeren
-    </button>
-    <span id="status" class="ml-auto text-slate-500"></span>
+  <div class="action-bar">
+    <button id="convert-btn" class="btn btn-primary" disabled>Umwandeln</button>
+    <button id="clear-btn" class="btn btn-ghost" disabled>Liste leeren</button>
+    <span id="status" class="status"></span>
   </div>
 
-  <div id="errors" class="space-y-2"></div>
+  <div id="errors" class="errors"></div>
 
-  <div class="border-t border-slate-200 pt-6">
-    <div class="flex items-center justify-between mb-3">
-      <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+  <div class="history-section">
+    <div class="history-head">
+      <h2 class="history-title">
         Letzte Konvertierungen
-        <span id="history-count" class="ml-2 text-xs font-normal text-slate-400"></span>
+        <span id="history-count" class="history-count"></span>
       </h2>
-      <button id="clear-all-btn" class="text-xs text-slate-500 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed" disabled>
+      <button id="clear-all-btn" class="btn btn-danger-ghost" disabled>
         Alle löschen
       </button>
     </div>
-    <div id="history" class="space-y-2">
-      <div id="history-empty" class="text-sm text-slate-400 italic">
-        Noch keine Konvertierungen.
-      </div>
+    <div id="history" class="history-list">
+      <div id="history-empty" class="history-empty">Noch keine Konvertierungen.</div>
     </div>
   </div>
 </div>
@@ -109,12 +100,12 @@
     fileListEl.innerHTML = '';
     files.forEach((f, i) => {
       const row = document.createElement('div');
-      row.className = 'flex items-center gap-3 bg-white border border-slate-200 rounded px-3 py-2 text-sm';
+      row.className = 'file-row';
       row.innerHTML = `
-        <span class="text-slate-500">📎</span>
-        <span class="flex-1 truncate">${escapeHtml(f.name)}</span>
-        <span class="text-slate-400 text-xs">${formatBytes(f.size)}</span>
-        <button data-i="${i}" class="text-slate-400 hover:text-red-600 remove-btn">✕</button>
+        <span class="file-row-icon">📎</span>
+        <span class="file-row-name">${escapeHtml(f.name)}</span>
+        <span class="file-row-size">${formatBytes(f.size)}</span>
+        <button data-i="${i}" class="file-row-remove remove-btn" title="Entfernen">✕</button>
       `;
       fileListEl.appendChild(row);
     });
@@ -148,11 +139,11 @@
   }
 
   dropzone.addEventListener('click', () => fileInput.click());
-  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('border-indigo-500', 'bg-indigo-50'); });
-  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('border-indigo-500', 'bg-indigo-50'));
+  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
   dropzone.addEventListener('drop', e => {
     e.preventDefault();
-    dropzone.classList.remove('border-indigo-500', 'bg-indigo-50');
+    dropzone.classList.remove('drag-over');
     addFiles(e.dataTransfer.files);
   });
   fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
@@ -162,15 +153,16 @@
   function showErrors(errors) {
     errorsEl.innerHTML = '';
     if (!errors || !errors.length) return;
-    const wrap = document.createElement('div');
-    wrap.className = 'space-y-1';
     errors.forEach(e => {
       const row = document.createElement('div');
-      row.className = 'flex items-center gap-3 px-4 py-2 bg-red-50 border border-red-200 rounded text-sm text-red-700';
-      row.innerHTML = `<span>✗</span><span class="font-medium">${escapeHtml(e.filename || '?')}</span><span class="text-xs">— ${escapeHtml(e.error)}</span>`;
-      wrap.appendChild(row);
+      row.className = 'error-row';
+      row.innerHTML = `
+        <span>✗</span>
+        <span class="error-row-filename">${escapeHtml(e.filename || '?')}</span>
+        <span class="error-row-msg">— ${escapeHtml(e.error)}</span>
+      `;
+      errorsEl.appendChild(row);
     });
-    errorsEl.appendChild(wrap);
   }
 
   // --- history ---------------------------------------------------------------
@@ -187,14 +179,14 @@
 
     jobs.forEach(j => {
       const card = document.createElement('div');
-      card.className = 'bg-white border border-slate-200 rounded-lg p-3';
+      card.className = 'history-card';
       card.dataset.jobId = j.job_id;
 
       const fileList = j.files.map(f => `
-        <li class="flex items-center gap-2 py-0.5 text-sm">
-          <span class="text-slate-400">📄</span>
-          <span class="flex-1 truncate">${escapeHtml(f.filename)}</span>
-          <span class="text-xs text-slate-400">${formatBytes(f.size)}</span>
+        <li class="history-file">
+          <span class="history-file-icon">📄</span>
+          <span class="history-file-name">${escapeHtml(f.filename)}</span>
+          <span class="history-file-size">${formatBytes(f.size)}</span>
         </li>
       `).join('');
 
@@ -203,26 +195,23 @@
       const ageSec = Math.floor(Date.now() / 1000) - j.created_at;
 
       card.innerHTML = `
-        <div class="flex items-center gap-2 mb-2">
-          <span class="text-xs font-medium text-slate-700">${j.files.length} Datei${isMulti ? 'en' : ''}</span>
-          <span class="text-xs text-slate-400">·</span>
-          <span class="text-xs text-slate-500" data-age="${ageSec}">${formatAge(ageSec)}</span>
-          <span class="text-xs text-slate-400">·</span>
-          <span class="text-xs text-slate-500" data-ttl="${j.ttl_remaining}">noch ${formatTtl(j.ttl_remaining)}</span>
-          <span class="ml-auto text-xs text-slate-400">${formatBytes(totalSize)}</span>
+        <div class="history-card-head">
+          <span class="history-card-count">${j.files.length} Datei${isMulti ? 'en' : ''}</span>
+          <span class="history-card-sep">·</span>
+          <span class="history-card-meta" data-age="${ageSec}">${formatAge(ageSec)}</span>
+          <span class="history-card-sep">·</span>
+          <span class="history-card-meta" data-ttl="${j.ttl_remaining}">noch ${formatTtl(j.ttl_remaining)}</span>
+          <span class="history-card-size">${formatBytes(totalSize)}</span>
         </div>
-        <ul class="space-y-0.5 mb-2">${fileList}</ul>
-        <div class="flex items-center gap-2 pt-2 border-t border-slate-100">
-          <button data-act="dl" data-format="auto"
-                  class="px-2 py-1 bg-indigo-600 text-white text-xs rounded font-medium hover:bg-indigo-700">
+        <ul class="history-files">${fileList}</ul>
+        <div class="history-card-actions">
+          <button data-act="dl" data-format="auto" class="btn btn-primary">
             ⬇ Download${isMulti ? ' (.zip)' : ''}
           </button>
-          ${isMulti ? '' : `<button data-act="dl" data-format="md"
-                  class="px-2 py-1 bg-white border border-slate-300 text-slate-700 text-xs rounded hover:bg-slate-50">
+          ${isMulti ? '' : `<button data-act="dl" data-format="md" class="btn btn-secondary">
             als .md
           </button>`}
-          <button data-act="delete"
-                  class="ml-auto px-2 py-1 text-slate-400 hover:text-red-600 text-xs">
+          <button data-act="delete" class="btn btn-danger-ghost" style="margin-left:auto;">
             Löschen
           </button>
         </div>
@@ -262,7 +251,7 @@
 
   // --- download / delete -----------------------------------------------------
   function showError(msg) {
-    statusEl.innerHTML = `<span class="text-red-600">${escapeHtml(msg)}</span>`;
+    statusEl.innerHTML = `<span style="color:var(--danger);">${escapeHtml(msg)}</span>`;
     setTimeout(() => { if (statusEl.innerHTML.includes(msg)) statusEl.textContent = ''; }, 4000);
   }
 

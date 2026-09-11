@@ -2,7 +2,7 @@
 
 Web-UI für [Microsoft MarkItDown](https://github.com/microsoft/markitdown) — Dateien (PPTX, PDF, DOCX, XLSX, Bilder, Audio, …) per Drag & Drop in Markdown konvertieren.
 
-- **Login**: lokales Benutzer/Passwort + optional Single Sign-On via OIDC (z. B. Authentik, Keycloak, Auth0)
+- **Login**: lokales Benutzer/Passwort + optional Single Sign-On via OIDC (z. B. Authentik, Casdoor, Keycloak, Auth0)
 - **Upload**: einzelne Dateien oder mehrere auf einmal, Download als .md oder gesammelt als .zip
 - **Docker**: läuft standalone oder hinter Reverse Proxy
 
@@ -55,6 +55,75 @@ Daten (User-JSON, Sessions) liegen in `./data/` und werden als Volume gemountet.
    ```
 6. `docker compose restart markitdown-web`
 
+## Casdoor-Setup (optional)
+
+MarkItDown Web nutzt für OIDC authlib's OIDC-Discovery, d. h. jede standardkonforme OIDC-Implementierung funktioniert. Casdoor ist OIDC-konform — kein code-side Sonderfall nötig.
+
+### 1. Casdoor bereitstellen
+
+**Variante A — Selbst gehostet (Docker):**
+
+```bash
+docker run -d --name casdoor \
+  -p 8000:8000 \
+  -e CASDOOR_ORIGIN=http://localhost:8000 \
+  casdoor/casdoor:latest
+```
+
+UI auf `http://localhost:8000`, Default-Login: `admin` / `123` (sofort ändern!).
+
+**Variante B — Casdoor Cloud:** casdoor.com → Sign-up, Instance erstellen, Domain merken (z. B. `myorg.casdoor.com`).
+
+### 2. Organization anlegen
+
+In Casdoor UI: **Organizations → Add**. Name (slug) merken, z. B. `builtfirst`.
+
+### 3. OIDC-Application anlegen
+
+**Applications → Add → Type: OIDC.**
+
+| Feld | Wert |
+|------|------|
+| Name | `markitdown-web` |
+| Organization | die eben angelegte Org |
+| Redirect URIs | `https://your-host/auth/oidc/callback` (bzw. `http://localhost:8000/auth/oidc/callback` für lokale Tests) |
+| Token/Sign method | `HS256` (Default reicht) |
+
+Nach dem Anlegen: **Client ID** und **Client Secret** notieren (im App-Detail sichtbar).
+
+### 4. .env setzen
+
+```
+OIDC_ENABLED=true
+OIDC_ISSUER=https://your-casdoor-host   # z. B. http://localhost:8000 oder https://myorg.casdoor.com
+OIDC_CLIENT_ID=<aus Schritt 3>
+OIDC_CLIENT_SECRET=<aus Schritt 3>
+OIDC_ORGANIZATION=builtfirst            # Org-Name aus Schritt 2 (für Doku/Debug)
+OIDC_APP_NAME=markitdown-web            # App-Name aus Schritt 3 (für Doku/Debug)
+OIDC_BUTTON_LABEL="Mit Casdoor anmelden"
+```
+
+`docker compose restart markitdown-web` (bzw. lokal: `uvicorn app.main:app` neu starten).
+
+### 5. Erster Login
+
+Auf `/login` klickt man jetzt auf den Button „Mit Casdoor anmelden". Casdoor fragt nach Username/Passwort, redirectet zurück zu `/auth/oidc/callback`, MarkItDown legt den User automatisch an (`OIDC_AUTO_CREATE_USERS=true`) und du landest auf `/upload`.
+
+### Casdoor-Claim-Mapping
+
+- `sub` → wird 1:1 als `oidc_sub` in `users.json` gespeichert. Casdoor-Format ist typischerweise `org/app/<user-id>` — wir akzeptieren das verbatim.
+- `preferred_username` → wird zum lokalen `username` (Fallback: E-Mail-Prefix).
+- `email`, `name` → werden mitgespeichert.
+
+## Keycloak / Auth0 / generische OIDC-Provider
+
+Der gleiche Flow funktioniert mit jedem OIDC-konformen Provider. Wesentlich:
+
+1. App vom Typ OIDC anlegen.
+2. Redirect-URI `https://your-host/auth/oidc/callback` setzen.
+3. `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` in `.env` setzen.
+4. `OIDC_BUTTON_LABEL` auf einen passenden Anzeigetext ändern.
+
 ## API
 
 | Methode | Pfad                                | Auth   | Body                              | Response |
@@ -93,9 +162,13 @@ API-Auth: `Authorization: Bearer <jwt>` oder Cookie `md_session`.
 | `BOOTSTRAP_USER` / `BOOTSTRAP_PASSWORD` | – | Wird beim ersten Start als Admin angelegt. |
 | `LOCAL_AUTH_ENABLED` | `true` | Username/Passwort-Login |
 | `OIDC_ENABLED` | `false` | OIDC-Login aktivieren |
-| `OIDC_ISSUER` | – | Issuer-URL (z. B. Authentik-App-URL) |
+| `OIDC_ISSUER` | – | Issuer-URL (z. B. Authentik-App-URL, Casdoor-Host, Keycloak-Realm) |
 | `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | – | OIDC-Credentials |
+| `OIDC_SCOPES` | `openid profile email` | OIDC-Scopes |
 | `OIDC_AUTO_CREATE_USERS` | `true` | User aus OIDC automatisch anlegen |
+| `OIDC_ORGANIZATION` | – | (Casdoor) Org-Name — nur für Doku/Debug |
+| `OIDC_APP_NAME` | – | (Casdoor) App-Name — nur für Doku/Debug |
+| `OIDC_BUTTON_LABEL` | `Mit Single Sign-On anmelden` | Text auf dem SSO-Button |
 | `MAX_UPLOAD_SIZE` | `104857600` | Max. Bytes pro Datei (default 100 MB) |
 | `DATA_RETENTION_SECONDS` | `600` | Idle-Zeit, nach der ein Job vom Reaper gelöscht wird (Sliding: jeder Zugriff setzt zurück) |
 | `SLIDING_TTL` | `true` | Wenn `true`: TTL wird bei jedem Download/View erneuert. Wenn `false`: harte Ablaufzeit ab Erstellung. |
@@ -107,12 +180,12 @@ API-Auth: `Authorization: Bearer <jwt>` oder Cookie `md_session`.
 webapp/
 ├── app/
 │   ├── main.py            # FastAPI routes
-│   ├── auth.py            # JWT + OIDC
+│   ├── auth.py            # JWT + OIDC (provider-agnostic)
 │   ├── converter.py       # markitdown-wrapper (+ .potx-Fix)
 │   ├── users.py           # JSON-backed user storage
 │   ├── config.py          # Settings (pydantic-settings)
 │   ├── templates/         # Jinja2 (base, login, upload)
-│   └── static/            # CSS
+│   └── static/            # CSS + Brand-Assets
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml              # nur Web-App

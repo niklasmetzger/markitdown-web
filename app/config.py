@@ -40,13 +40,23 @@ class Settings(BaseSettings):
     local_auth_enabled: bool = True
     session_ttl_hours: int = 12
 
-    # OIDC / Authentik
+    # OIDC / OIDC-Provider (Authentik, Casdoor, Keycloak, Auth0, ...)
+    # Der Code ist über authlib's OIDC-Discovery provider-agnostisch.
     oidc_enabled: bool = False
-    oidc_issuer: Optional[str] = None  # z.B. https://authentik.example.com
+    oidc_issuer: Optional[str] = None  # z.B. https://authentik.example.com  oder  https://casdoor.example.com
     oidc_client_id: Optional[str] = None
     oidc_client_secret: Optional[str] = None
     oidc_scopes: str = "openid profile email"
     oidc_auto_create_users: bool = True  # User aus OIDC automatisch anlegen
+
+    # Casdoor-spezifisch: Sub-Claims kommen als "org/app/user-id".
+    # Werden hier nur als Info vorgehalten; die eigentliche Callback-URL-
+    # Konstruktion läuft automatisch via authlib's authorize_redirect.
+    oidc_organization: Optional[str] = None  # Casdoor Org-Name
+    oidc_app_name: Optional[str] = None       # Casdoor App-Name
+
+    # Label für den SSO-Button auf der Login-Seite (z.B. "Mit Casdoor anmelden").
+    oidc_button_label: str = "Mit Single Sign-On anmelden"
 
     # Bootstrap
     bootstrap_user: Optional[str] = None  # "admin" — beim ersten Start anlegen

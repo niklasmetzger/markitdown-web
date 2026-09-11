@@ -1,4 +1,8 @@
-"""Auth: local user/password (JWT cookie sessions) and optional OIDC (Authentik etc.)."""
+"""Auth: local user/password (JWT cookie sessions) and optional OIDC.
+
+OIDC is provider-agnostic via authlib's OIDC discovery. Works with
+Authentik, Casdoor, Keycloak, Auth0 and any other OIDC-compliant IdP.
+"""
 from __future__ import annotations
 
 import secrets
@@ -84,7 +88,11 @@ def get_current_user(user=Depends(get_current_user_optional)) -> dict:
     return user
 
 
-# --- OIDC client (Authentik-compatible) ---------------------------------------
+# --- OIDC client (provider-agnostic via OIDC discovery) -----------------------
+# Tested with Authentik, Casdoor and Keycloak. The `sub` claim is used as the
+# stable user identifier; Casdoor typically delivers `org/app/<user-id>` which
+# we store verbatim — collisions across organizations are unlikely in single-tenant
+# setups but possible in shared-tenant Casdoor instances.
 
 def get_oauth_client(settings: Settings) -> Optional[OAuth]:
     if not settings.oidc_configured:
