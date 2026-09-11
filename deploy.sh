@@ -24,14 +24,14 @@ NC='\033[0m'
 
 echo "→ 1/5  Code hochladen …"
 ssh "$SERVER" "mkdir -p $APP_DIR"
-# .env NICHT syncen (geheim + in .gitignore). Server-seitig manuell anlegen oder
-# von diesem Script erzeugen lassen (siehe Schritt 2).
+# .env WIRD gesynct, falls lokal vorhanden (für eigenes Passwort/SECRET_KEY).
+# Schritt 2 prüft, ob die .env auf dem Server schon existiert und überschreibt
+# sie nur, wenn nicht — also kein Risiko, eine bestehende zu killen.
 rsync -avz \
   --exclude=.git \
   --exclude=.venv \
   --exclude=__pycache__ \
   --exclude='*.pyc' \
-  --exclude=.env \
   --exclude=data/users.json \
   "$PROJECT/" "$SERVER:$APP_DIR/"
 
