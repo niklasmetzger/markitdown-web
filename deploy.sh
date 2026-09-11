@@ -90,7 +90,11 @@ fi
 echo -e "${GREEN}  ✓ Port $WEB_PORT ist frei${NC}"
 
 echo "→ 4/5  Container neu bauen → starten …"
-ssh "$SERVER" "cd $APP_DIR && docker compose up -d --build"
+# WEB_PORT als Inline-env durchreichen, damit docker-compose den Port aus
+# unserem bash-Var ($WEB_PORT) nimmt — NICHT den Wert aus der .env auf dem Server
+# (der kann veraltet sein und wäre dann ein Hard-Coded-Konflikt).
+# docker-compose precedence: shell env > .env-file > compose-file default.
+ssh "$SERVER" "cd $APP_DIR && WEB_PORT=$WEB_PORT docker compose up -d --build"
 
 echo "→ 5/5  Warte auf /health (max 60s) …"
 WAITED=0
