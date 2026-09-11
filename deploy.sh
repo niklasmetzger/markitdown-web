@@ -64,8 +64,13 @@ if ssh "$SERVER" "grep -q BOOTSTRAP_PASSWORD $APP_DIR/.env" 2>/dev/null; then
   echo "$CREDS" | sed 's/^/    /'
 fi
 
-echo "→ 3/5  Port-Check …"
-# Prüfen ob der Port auf dem Server schon belegt ist (von einem anderen Service)
+echo "→ 3/5  Container stoppen → Port-Check → neu bauen → starten …"
+# Erst stoppen, damit der alte markitdown-web-Container (falls noch auf dem Port)
+# nicht sich selbst blockiert. Erst danach prüfen wir, ob der Port durch einen
+# ECHTEN Fremdkonflikt belegt ist.
+ssh "$SERVER" "cd $APP_DIR && docker compose down --remove-orphans" 2>/dev/null || true
+
+# Prüfen ob der Port auf dem Server noch belegt ist (von einem ANDEREN Service)
 PORT_CHECK=$(ssh "$SERVER" "
   if command -v ss >/dev/null 2>&1; then
     ss -tln 2>/dev/null | grep -E ':${WEB_PORT}\s' || true
@@ -74,18 +79,17 @@ PORT_CHECK=$(ssh "$SERVER" "
   fi
 ")
 if [ -n "$PORT_CHECK" ]; then
-  echo -e "${RED}  ✗ Port $WEB_PORT ist auf dem Server bereits belegt:${NC}"
+  echo -e "${RED}  ✗ Port $WEB_PORT ist nach Stop des alten Containers noch belegt (Fremdkonflikt):${NC}"
   echo "$PORT_CHECK" | sed 's/^/    /'
   echo ""
   echo "  Optionen:"
   echo "    - WEB_PORT=4000 $0  (anderen Port wählen)"
-  echo "    - Oder den Konflikt-Server-Container stoppen"
+  echo "    - Oder den fremden Service auf dem Server stoppen"
   exit 1
 fi
 echo -e "${GREEN}  ✓ Port $WEB_PORT ist frei${NC}"
 
-echo "→ 4/5  Container stoppen → neu bauen → starten …"
-ssh "$SERVER" "cd $APP_DIR && docker compose down --remove-orphans" 2>/dev/null || true
+echo "→ 4/5  Container neu bauen → starten …"
 ssh "$SERVER" "cd $APP_DIR && docker compose up -d --build"
 
 echo "→ 5/5  Warte auf /health (max 60s) …"
